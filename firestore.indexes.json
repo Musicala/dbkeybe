@@ -1,0 +1,38 @@
+{
+  "indexes": [
+    {
+      "collectionGroup": "keybeLeads",
+      "queryScope": "COLLECTION",
+      "fields": [
+        { "fieldPath": "revisionStatus", "order": "ASCENDING" },
+        { "fieldPath": "createdAt",      "order": "DESCENDING" }
+      ]
+    },
+    {
+      "collectionGroup": "keybeLeads",
+      "queryScope": "COLLECTION",
+      "fields": [
+        { "fieldPath": "assignedTo",     "order": "ASCENDING" },
+        { "fieldPath": "updatedAt",      "order": "DESCENDING" }
+      ]
+    },
+    {
+      "collectionGroup": "keybeLeads",
+      "queryScope": "COLLECTION",
+      "fields": [
+        { "fieldPath": "revisionStatus", "order": "ASCENDING" },
+        { "fieldPath": "assignedTo",     "order": "ASCENDING" },
+        { "fieldPath": "createdAt",      "order": "DESCENDING" }
+      ]
+    },
+    {
+      "collectionGroup": "keybeLeads",
+      "queryScope": "COLLECTION",
+      "fields": [
+        { "fieldPath": "reviewedAt",     "order": "DESCENDING" },
+        { "fieldPath": "createdAt",      "order": "DESCENDING" }
+      ]
+    }
+  ],
+  "fieldOverrides": []
+}
