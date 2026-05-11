@@ -7,6 +7,8 @@ export const COLLECTIONS = {
   PROFILES:     'profiles',
   KEYBE_LEADS:  'keybeLeads',
   LEAD_MESSAGES: 'messages',
+  KEYBE_UNLINKED_CONVERSATIONS: 'keybeUnlinkedConversations',
+  KEYBE_IMPORTS: 'keybeImports',
 };
 
 // Roles de usuario
@@ -40,6 +42,7 @@ export const RESPONSABLES = [
 // Canales
 export const CHANNELS = {
   whatsapp:  'WhatsApp',
+  keybe_wp:  'Keybe WP',
   instagram: 'Instagram',
   facebook:  'Facebook',
   web:       'Web',

@@ -58,3 +58,32 @@ export function detectInterest(texts) {
 export function detectInterestFromText(text) {
   return detectInterest([text]);
 }
+
+export function detectInterestTags(texts) {
+  const combined = (texts || [])
+    .map((t) => String(t || '').toLowerCase())
+    .join(' ');
+
+  const groups = {
+    Musica: ['musica', 'música', 'instrumento', 'clase musical'],
+    Danza: ['danza', 'baile', 'ballet', 'porras', 'salsa'],
+    'Artes plasticas': ['artes plasticas', 'artes plásticas', 'pintura', 'dibujo', 'arte'],
+    Teatro: ['teatro', 'actuacion', 'actuación', 'escena'],
+    Piano: ['piano'],
+    Guitarra: ['guitarra'],
+    Canto: ['canto', 'vocal'],
+    Bateria: ['bateria', 'batería'],
+    Violin: ['violin', 'violín'],
+    Ninos: ['niño', 'nino', 'niña', 'nina', 'infantil', 'hijo', 'hija'],
+    Adultos: ['adulto', 'adultos'],
+    Vacacional: ['vacacional', 'vacaciones'],
+    Precios: ['precio', 'precios', 'costo', 'valor', 'mensualidad', 'tarifa'],
+    Horarios: ['horario', 'horarios', 'hora disponible'],
+    Ubicacion: ['ubicacion', 'ubicación', 'direccion', 'dirección', 'sede'],
+    Inscripcion: ['inscripcion', 'inscripción', 'matricula', 'matrícula', 'registrar'],
+  };
+
+  return Object.entries(groups)
+    .filter(([, keywords]) => keywords.some((kw) => combined.includes(kw)))
+    .map(([tag]) => tag);
+}
