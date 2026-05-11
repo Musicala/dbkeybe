@@ -27,6 +27,28 @@ export async function replaceLeadMessages(leadId, messages) {
   }
 }
 
+export async function upsertLeadMessages(leadId, messages) {
+  const cleanMessages = (messages || []).filter((msg) => msg.text || msg.createdAt);
+  let saved = 0;
+  let omitted = 0;
+
+  for (const msg of cleanMessages) {
+    const messageId = msg.id || `msg_${String(msg.order ?? Date.now()).padStart(5, '0')}`;
+    try {
+      await setDoc(doc(db, COLLECTIONS.KEYBE_LEADS, leadId, COLLECTIONS.LEAD_MESSAGES, messageId), {
+        ...msg,
+        importedAt: serverTimestamp(),
+      }, { merge: true });
+      saved++;
+    } catch (err) {
+      console.error('No se pudo guardar mensaje Keybe', { leadId, messageId, err });
+      omitted++;
+    }
+  }
+
+  return { saved, omitted };
+}
+
 export async function getLeadMessages(leadId) {
   const snap = await getDocs(query(messagesRef(leadId), orderBy('order', 'asc')));
   return snap.docs

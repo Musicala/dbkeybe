@@ -41,10 +41,73 @@ function stripReviewFields(data) {
  *
  * @returns {Promise<Object[]>}
  */
+function pickReviewFields(data) {
+  return {
+    revisionStatus: data.revisionStatus ?? 'pendiente_revision',
+    isInOfficialDatabase: data.isInOfficialDatabase ?? null,
+    assignedTo: data.assignedTo ?? 'Sin asignar',
+    internalNote: data.internalNote ?? '',
+    reviewedBy: data.reviewedBy ?? null,
+    reviewedByEmail: data.reviewedByEmail ?? null,
+    reviewedAt: data.reviewedAt ?? null,
+  };
+}
+
+async function findLegacyLeadForImport(newDocId, data) {
+  const candidates = [];
+
+  if (data.keybeContactUuid) {
+    const snap = await getDocs(query(leadsRef(), where('keybeContactUuid', '==', data.keybeContactUuid), limit(5)));
+    candidates.push(...snap.docs);
+  }
+
+  if (!candidates.length && data.email) {
+    const snap = await getDocs(query(leadsRef(), where('email', '==', data.email), limit(5)));
+    candidates.push(...snap.docs);
+  }
+
+  const found = candidates
+    .map((snap) => ({ id: snap.id, data: snap.data() }))
+    .find((lead) => lead.id !== newDocId && !lead.data.migratedTo && isLikelyBadPhoneLead(lead));
+
+  return found || null;
+}
+
+function isLikelyBadPhoneLead(lead) {
+  const data = lead.data || {};
+  const phone = String(data.phone || lead.id || '').replace(/\D/g, '');
+  const phoneRaw = String(data.phoneRaw || '').trim();
+  const recoveredScientific = data.dataQuality?.phoneWasRecoveredFromScientificNotation === true;
+
+  if (!phone) return true;
+  if (phone.length !== 10) return true;
+  if (!phone.startsWith('3')) return true;
+
+  // Importaciones antiguas pudieron guardar telefonos redondeados por Excel:
+  // 5.73507E+11 -> 573507000000 -> 3507000000.
+  // Si el raw venia en notacion cientifica corta y el telefono termina en varios ceros,
+  // lo tratamos como legacy corrupto para migrarlo al doc nuevo por uuid/email.
+  if (recoveredScientific && looksLikeRoundedScientific(phoneRaw) && /0{4,}$/.test(phone)) {
+    return true;
+  }
+
+  return false;
+}
+
+function looksLikeRoundedScientific(value) {
+  const text = String(value || '').trim().replace(',', '.').replace(/\s+/g, '');
+  const match = text.match(/^[+-]?(\d+)(?:\.(\d+))?e[+-]?\d+$/i);
+  if (!match) return false;
+  const significantDigits = `${match[1] || ''}${match[2] || ''}`.replace(/^0+/, '').length;
+  return significantDigits > 0 && significantDigits < 10;
+}
+
 export async function getAllLeads() {
   const q    = query(leadsRef(), orderBy('createdAt', 'desc'));
   const snap = await getDocs(q);
-  return snap.docs.map((d) => ({ id: d.id, ...d.data() }));
+  return snap.docs
+    .map((d) => ({ id: d.id, ...d.data() }))
+    .filter((lead) => !lead.migratedTo);
 }
 
 /**
@@ -69,8 +132,22 @@ export async function getLeadById(leadId) {
 export async function upsertLead(docId, data) {
   const ref = doc(db, COLLECTIONS.KEYBE_LEADS, docId);
   const snap = await getDoc(ref);
-  const payload = snap.exists() ? stripReviewFields(data) : data;
+  const legacyLead = snap.exists() ? null : await findLegacyLeadForImport(docId, data);
+  const payload = snap.exists()
+    ? stripReviewFields(data)
+    : legacyLead
+    ? { ...data, ...pickReviewFields(legacyLead.data), migratedFrom: legacyLead.id }
+    : data;
   await setDoc(ref, payload, { merge: true });
+
+  if (legacyLead) {
+    await setDoc(doc(db, COLLECTIONS.KEYBE_LEADS, legacyLead.id), {
+      migratedTo: docId,
+      migrationStatus: 'migrated_phone_fixed',
+      migrationReason: 'Telefono reparado en reimportacion Keybe',
+      updatedAt: serverTimestamp(),
+    }, { merge: true });
+  }
 }
 
 /**
@@ -215,4 +292,30 @@ export async function batchUpsertLeads(leads, onProgress) {
     const pct = Math.round((uploaded / total) * 100);
     onProgress?.(pct, `Subiendo contactos… ${uploaded} de ${total}`);
   }
+}
+
+export async function saveImportBatch(importBatchId, data) {
+  await setDoc(doc(db, COLLECTIONS.KEYBE_IMPORTS, importBatchId), {
+    ...data,
+    updatedAt: serverTimestamp(),
+  }, { merge: true });
+}
+
+export async function upsertUnlinkedConversations(conversations, onProgress) {
+  const total = conversations.length;
+  let saved = 0;
+  const BATCH_SIZE = 25;
+
+  for (let i = 0; i < total; i += BATCH_SIZE) {
+    const chunk = conversations.slice(i, i + BATCH_SIZE);
+    await Promise.all(chunk.map((conv) => {
+      const { id, ...data } = conv;
+      return setDoc(doc(db, COLLECTIONS.KEYBE_UNLINKED_CONVERSATIONS, id), data, { merge: true });
+    }));
+    saved += chunk.length;
+    const pct = total ? Math.round((saved / total) * 100) : 100;
+    onProgress?.(pct, `Guardando conversaciones sin contacto... ${saved} de ${total}`);
+  }
+
+  return { saved };
 }
