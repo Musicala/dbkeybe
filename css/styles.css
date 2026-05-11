@@ -1263,8 +1263,39 @@ img { max-width: 100%; display: block; }
   line-height: 1.6;
 }
 
+.quality-flags {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-top: 12px;
+}
+
+.quality-pill {
+  background: var(--c-purple-soft);
+  border: 1px solid var(--c-purple-mid);
+  border-radius: 999px;
+  color: var(--c-purple-dark);
+  font-size: 11px;
+  font-weight: 500;
+  padding: 4px 9px;
+}
+
 .detail-card--conversation {
   grid-column: 1 / -1;
+}
+
+.conversation-tools {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 12px;
+  align-items: center;
+  margin-bottom: 12px;
+}
+
+.conversation-summary {
+  color: var(--c-text-soft);
+  font-size: 12px;
+  white-space: nowrap;
 }
 
 .conversation-list {
@@ -1305,6 +1336,10 @@ img { max-width: 100%; display: block; }
   color: var(--c-text);
   line-height: 1.6;
   white-space: pre-wrap;
+}
+
+#btn-load-more-messages {
+  margin-top: 12px;
 }
 
 .detail-meta {
