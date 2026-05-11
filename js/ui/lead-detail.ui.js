@@ -11,6 +11,9 @@ import { showSuccess, showError } from './toast.ui.js';
 import { serverTimestamp }        from 'https://www.gstatic.com/firebasejs/10.12.2/firebase-firestore.js';
 
 const getEl = (id) => document.getElementById(id);
+let _conversationMessages = [];
+let _conversationVisible = 80;
+let _conversationQuery = '';
 
 // ── Inicialización ────────────────────────────────────────
 
@@ -20,6 +23,15 @@ export function initLeadDetailUI() {
   });
 
   getEl('btn-save-lead')?.addEventListener('click', saveLead);
+  getEl('detail-conversation-search')?.addEventListener('input', (e) => {
+    _conversationQuery = e.target.value.trim().toLowerCase();
+    _conversationVisible = 80;
+    renderConversationList();
+  });
+  getEl('btn-load-more-messages')?.addEventListener('click', () => {
+    _conversationVisible += 80;
+    renderConversationList();
+  });
 }
 
 // ── Renderizar ficha ──────────────────────────────────────
@@ -30,15 +42,15 @@ export function renderLeadDetail() {
 
   // Encabezado
   setEl('detail-title',    lead.fullName || '(Sin nombre)');
-  setEl('detail-subtitle', `Teléfono: ${displayPhone(lead.phone)} · Canal: ${formatChannel(lead.channel)}`);
+  setEl('detail-subtitle', `Telefono: ${displayPhone(lead.phone)} - Canal: ${formatChannel(lead.channel)}`);
 
   // Datos básicos
   setEl('detail-fullname',      lead.fullName || '—');
-  setEl('detail-phone',         displayPhone(lead.phone));
+  setEl('detail-phone',         lead.phoneE164 ? `${displayPhone(lead.phone)} (${lead.phoneE164})` : displayPhone(lead.phone));
   setEl('detail-email',         lead.email || '—');
   setEl('detail-channel',       formatChannel(lead.channel));
   setEl('detail-uuid',          lead.keybeContactUuid || '—');
-  setEl('detail-keybe-created', formatDate(lead.createdAt));
+  setEl('detail-keybe-created', formatDate(lead.keybeCreatedAt || lead.createdAt));
 
   // Actividad
   setEl('detail-msg-count',   lead.messageCount ?? 0);
@@ -46,6 +58,7 @@ export function renderLeadDetail() {
   setEl('detail-interest',    lead.possibleInterest || 'Sin clasificar');
   setEl('detail-last-msg',    lead.lastMessage || '(Sin mensajes registrados)');
   setEl('detail-duplicate-info', buildDuplicateText(lead));
+  renderQualityFlags(lead);
   renderConversation(lead);
 
   // Campos de revisión
@@ -93,21 +106,47 @@ async function renderConversation(lead) {
       return;
     }
 
-    listEl.innerHTML = messages.map((msg) => `
-      <article class="conversation-item">
-        <div class="conversation-meta">
-          <span>${escHtml(formatDate(msg.createdAt, true))}</span>
-          <span>${escHtml(formatChannel(msg.channel))}</span>
-          ${msg.author ? `<span>${escHtml(msg.author)}</span>` : ''}
-          ${msg.direction ? `<span>${escHtml(msg.direction)}</span>` : ''}
-        </div>
-        <p class="conversation-text">${escHtml(msg.text || '(Mensaje sin texto)')}</p>
-      </article>
-    `).join('');
+    _conversationMessages = [...messages].sort((a, b) => readDateMs(a.createdAt) - readDateMs(b.createdAt));
+    _conversationVisible = 80;
+    _conversationQuery = '';
+    const searchEl = getEl('detail-conversation-search');
+    if (searchEl) searchEl.value = '';
+    renderConversationList();
   } catch (err) {
     console.error(err);
     listEl.innerHTML = '<p class="empty-state">No se pudo cargar la conversacion completa.</p>';
   }
+}
+
+function renderConversationList() {
+  const listEl = getEl('detail-conversation-list');
+  if (!listEl) return;
+
+  const filtered = _conversationQuery
+    ? _conversationMessages.filter((msg) => String(msg.text || '').toLowerCase().includes(_conversationQuery))
+    : _conversationMessages;
+  const visible = filtered.slice(0, _conversationVisible);
+
+  if (!visible.length) {
+    listEl.innerHTML = '<p class="empty-state">No hay mensajes que coincidan con la busqueda.</p>';
+  } else {
+    listEl.innerHTML = visible.map((msg) => `
+      <article class="conversation-item">
+        <div class="conversation-meta">
+          <span>${escHtml(formatDate(msg.createdAt, true))}</span>
+          <span>${escHtml(formatChannel(msg.channel))}</span>
+          <span>${escHtml(formatSpeaker(msg.direction || msg.type || msg.sender))}</span>
+          ${msg.author || msg.sender ? `<span>${escHtml(msg.author || msg.sender)}</span>` : ''}
+        </div>
+        <p class="conversation-text">${escHtml(msg.text || '(Mensaje sin texto)')}</p>
+      </article>
+    `).join('');
+  }
+
+  const moreBtn = getEl('btn-load-more-messages');
+  const summary = getEl('detail-conversation-summary');
+  if (summary) summary.textContent = `${Math.min(visible.length, filtered.length)} de ${filtered.length} mensajes`;
+  if (moreBtn) moreBtn.hidden = _conversationVisible >= filtered.length;
 }
 
 function buildDuplicateText(lead) {
@@ -121,6 +160,35 @@ function buildDuplicateText(lead) {
     : '';
 
   return `Este contacto consolida ${totalRows} filas con el mismo telefono (${mergedRows} fusionadas).${rows}`;
+}
+
+function renderQualityFlags(lead) {
+  const el = getEl('detail-quality-flags');
+  if (!el) return;
+  const q = lead.dataQuality || {};
+  const flags = [
+    q.hasValidPhone ? 'Telefono valido' : 'Sin telefono real',
+    q.hasMessages ? 'Conversacion asociada automaticamente' : 'Sin conversacion asociada',
+    q.possibleDuplicate || lead.isDuplicate ? 'Posible duplicado' : '',
+    q.phoneWasRecoveredFromScientificNotation ? 'Telefono recuperado de notacion cientifica' : '',
+  ].filter(Boolean);
+  el.innerHTML = flags.map((flag) => `<span class="quality-pill">${escHtml(flag)}</span>`).join('');
+}
+
+function formatSpeaker(value) {
+  const raw = String(value || '').toLowerCase();
+  if (raw.includes('advisor') || raw.includes('agent') || raw.includes('asesor') || raw.includes('out')) return 'advisor';
+  if (raw.includes('bot')) return 'bot';
+  if (raw.includes('system') || raw.includes('sistema')) return 'system';
+  if (raw.includes('user') || raw.includes('cliente') || raw.includes('in')) return 'user';
+  return raw || 'desconocido';
+}
+
+function readDateMs(value) {
+  if (!value) return 0;
+  if (value.toDate) return value.toDate().getTime();
+  const d = value instanceof Date ? value : new Date(value);
+  return isNaN(d.getTime()) ? 0 : d.getTime();
 }
 
 // ── Guardar cambios ───────────────────────────────────────

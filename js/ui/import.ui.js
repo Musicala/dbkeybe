@@ -10,6 +10,8 @@ let _contactsFile = null;
 let _messagesFile = null;
 let _processedLeads = null;
 let _processedStats = null;
+let _processedDiagnostics = null;
+let _processedUnlinkedConversations = null;
 
 export function initImportUI() {
   bindFileZone('upload-contacts', 'contacts-file-name', 'contacts-status', 'upload-contacts-zone', (file) => {
@@ -24,6 +26,7 @@ export function initImportUI() {
 
   getEl('btn-start-import')?.addEventListener('click', handleStartImport);
   getEl('btn-clear-import')?.addEventListener('click', resetImportForm);
+  getEl('btn-download-diagnostics')?.addEventListener('click', downloadDiagnostics);
 }
 
 function bindFileZone(inputId, nameId, statusId, zoneId, onFile) {
@@ -82,10 +85,12 @@ async function checkReadyToImport() {
       showInfo('Analizando archivos...', 2000);
       const contacts = await parseContactsFile(_contactsFile);
       const messages = await parseMessagesFile(_messagesFile);
-      const { leads, stats } = processImportData(contacts, messages);
+      const { leads, stats, diagnostics, unlinkedConversations } = processImportData(contacts, messages);
 
       _processedLeads = leads;
       _processedStats = stats;
+      _processedDiagnostics = diagnostics;
+      _processedUnlinkedConversations = unlinkedConversations;
       renderPreview(stats);
 
       if (btn) btn.disabled = false;
@@ -110,14 +115,20 @@ function renderPreview(stats) {
     { label: 'Filas en contacts.xlsx', value: stats.totalContactRows },
     { label: 'Filas en messages.xlsx', value: stats.totalMessageRows },
     { label: 'Contactos unicos a crear/actualizar', value: stats.uniqueImportableContacts },
-    { label: 'Filas sin telefono', value: stats.contactRowsWithoutPhone },
-    { label: 'Filas omitidas', value: stats.omittedContactRows },
-    { label: 'Grupos duplicados detectados', value: stats.duplicateGroups },
-    { label: 'Registros fusionados por duplicado', value: stats.duplicateMergedRows },
+    { label: 'Contactos con telefono valido', value: stats.contactsWithValidPhone },
+    { label: 'Contactos sin telefono real', value: stats.contactsWithoutPhone },
+    { label: 'Contactos con email', value: stats.contactsWithEmail },
+    { label: 'Duplicados por telefono', value: stats.duplicateGroups },
     { label: 'Contactos con mensajes', value: stats.contactsWithMessages },
     { label: 'Contactos sin mensajes', value: stats.contactsWithoutMessages },
-    { label: 'Mensajes asociados correctamente', value: stats.associatedMessages },
-    { label: 'Mensajes sin contacto asociado', value: stats.messagesWithoutContact },
+    { label: 'Mensajes con telefono valido', value: stats.messagesWithValidPhone },
+    { label: 'Mensajes sin telefono real', value: stats.messagesWithoutRealPhone },
+    { label: 'Mensajes asociables a contacto', value: stats.messagesAssociableToContact },
+    { label: 'Mensajes no asociados', value: stats.messagesWithoutContact },
+    { label: 'Conversaciones detectadas', value: stats.conversationsDetected },
+    { label: 'Conversaciones sin contacto', value: stats.conversationsWithoutContact },
+    { label: 'Posibles errores de fecha', value: stats.possibleDateErrors },
+    { label: 'Telefonos recuperados de notacion cientifica', value: stats.phonesRecoveredFromScientificNotation },
   ];
 
   previewStatsEl.innerHTML = rows.map((s) => `
@@ -131,10 +142,11 @@ function renderPreview(stats) {
   oldNotes?.remove();
 
   const notes = [
-    stats.contactRowsWithoutPhone > 0 ? `Se detectaron ${stats.contactRowsWithoutPhone} filas sin telefono. No se importaran.` : '',
-    stats.duplicateGroups > 0 ? `Se detectaron ${stats.duplicateGroups} grupos de duplicados por telefono. Seran consolidados.` : '',
+    stats.contactRowsWithoutPhone > 0 ? `Se detectaron ${stats.contactRowsWithoutPhone} contactos sin telefono real. Quedan en diagnostico, no se inventa asociacion.` : '',
+    stats.duplicateGroups > 0 ? `Se detectaron ${stats.duplicateGroups} grupos de duplicados por telefono. Se conserva todo en allOriginalFields.` : '',
     `Se asociaron ${stats.associatedMessages} mensajes a contactos importados.`,
-    stats.messagesWithoutContact > 0 ? `${stats.messagesWithoutContact} mensajes no pudieron asociarse a ningun contacto.` : '',
+    stats.messagesWithoutContact > 0 ? `${stats.messagesWithoutContact} mensajes quedan como conversaciones sin contacto asociado.` : '',
+    stats.phonesRecoveredFromScientificNotation > 0 ? `${stats.phonesRecoveredFromScientificNotation} telefonos fueron recuperados desde notacion cientifica.` : '',
   ].filter(Boolean);
 
   previewEl.insertAdjacentHTML('beforeend', `
@@ -175,10 +187,14 @@ async function handleStartImport() {
   if (resultEl) resultEl.hidden = true;
 
   try {
-    await uploadLeads(_processedLeads, (pct, msg) => {
+    const summary = await uploadLeads(_processedLeads, (pct, msg) => {
       if (fillEl) fillEl.style.width = `${pct}%`;
       if (pctEl) pctEl.textContent = `${pct}%`;
       if (msgEl) msgEl.textContent = msg;
+    }, {
+      stats: _processedStats,
+      diagnostics: _processedDiagnostics,
+      unlinkedConversations: _processedUnlinkedConversations,
     });
 
     if (fillEl) fillEl.style.width = '100%';
@@ -190,8 +206,9 @@ async function handleStartImport() {
       resultEl.className = 'import-result';
       resultEl.innerHTML = `
         <strong>Importacion exitosa</strong><br/>
-        Se leyeron <strong>${_processedStats?.totalContactRows ?? 0}</strong> filas de contactos y se crearon/actualizaron <strong>${_processedLeads.length}</strong> contactos unicos.<br/>
-        Se fusionaron <strong>${_processedStats?.duplicateMergedRows ?? 0}</strong> filas duplicadas y se guardaron <strong>${_processedStats?.associatedMessages ?? 0}</strong> mensajes asociados.<br/>
+        Contactos creados/actualizados: <strong>${_processedLeads.length}</strong>.<br/>
+        Mensajes guardados/actualizados: <strong>${summary.messagesSaved ?? 0}</strong>. Omitidos: <strong>${summary.messagesOmitted ?? 0}</strong>.<br/>
+        Conversaciones sin contacto guardadas/actualizadas: <strong>${summary.unlinkedConversationsSaved ?? 0}</strong>.<br/>
         Ya puedes ir a la seccion <strong>Contactos</strong> para comenzar la revision.
       `;
     }
@@ -216,6 +233,8 @@ function resetImportForm() {
   _messagesFile = null;
   _processedLeads = null;
   _processedStats = null;
+  _processedDiagnostics = null;
+  _processedUnlinkedConversations = null;
 
   const ids = [
     'upload-contacts', 'upload-messages',
@@ -247,6 +266,22 @@ function resetImportForm() {
 
   const btn = getEl('btn-start-import');
   if (btn) btn.disabled = true;
+}
+
+function downloadDiagnostics() {
+  if (!_processedDiagnostics) {
+    showError('Primero carga y analiza los archivos.');
+    return;
+  }
+  const blob = new Blob([JSON.stringify(_processedDiagnostics, null, 2)], { type: 'application/json;charset=utf-8' });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = `diagnostico-keybe-${_processedStats?.importBatchId || Date.now()}.json`;
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+  URL.revokeObjectURL(url);
 }
 
 function formatFileSize(bytes) {
