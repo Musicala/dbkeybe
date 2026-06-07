@@ -1,40 +1,57 @@
 // dashboard.ui.js - Resumen y estadisticas.
 
-import { getState } from '../utils/state.js';
-import { calcStats, getRecentActivity } from '../services/firestore.service.js';
+import { getDashboardStats, recalcDashboardStatsFromFirestore, getRecentActivityPage } from '../services/firestore.service.js';
 import { formatRelativeDate, formatStatus } from '../utils/formatters.js';
 
 const getEl = (id) => document.getElementById(id);
 
-export function renderDashboard() {
-  const leads = getState('allLeads');
+export async function renderDashboard({ forceRecalc = false } = {}) {
+  try {
+    let [stats, recent] = await Promise.all([
+      getDashboardStats(),
+      getRecentActivityPage(8),
+    ]);
 
-  if (!leads || leads.length === 0) {
+    // Si no hay stats guardadas o el total es 0, recalcular desde Firestore.
+    // Esto cubre el caso donde el import fue pausado antes de completarse.
+    const needsRecalc = forceRecalc || !stats || stats.total == null || stats.total === 0;
+    if (needsRecalc) {
+      try {
+        stats = await recalcDashboardStatsFromFirestore();
+      } catch (recalcErr) {
+        console.warn('No se pudo recalcular stats desde Firestore:', recalcErr);
+      }
+    }
+
+    if (!stats || stats.total === 0) {
+      renderEmptyDashboard();
+      return;
+    }
+
+    renderStats(stats);
+    renderProgress(stats);
+    renderRecentActivity(recent);
+    updateSubtitle(stats);
+  } catch (err) {
+    console.error('Error cargando dashboard:', err);
     renderEmptyDashboard();
-    return;
   }
-
-  const stats = calcStats(leads);
-  renderStats(stats);
-  renderProgress(stats);
-  renderRecentActivity(leads);
-  updateSubtitle(leads);
 }
 
 function renderStats(stats) {
-  setText('stat-total', stats.total);
-  setText('stat-original-rows', stats.originalRows || stats.total);
-  setText('stat-pending', stats.pending);
-  setText('stat-in-base', stats.inBase);
-  setText('stat-not-in-base', stats.notInBase);
-  setText('stat-to-contact', stats.toContact);
-  setText('stat-duplicate', stats.duplicate);
-  setText('stat-discarded', stats.discarded);
-  setText('stat-today', stats.today);
+  setText('stat-total', stats.total || 0);
+  setText('stat-original-rows', stats.originalRows || stats.total || 0);
+  setText('stat-pending', stats.pending || 0);
+  setText('stat-in-base', stats.inBase || 0);
+  setText('stat-not-in-base', stats.notInBase || 0);
+  setText('stat-to-contact', stats.toContact || 0);
+  setText('stat-duplicate', stats.duplicate || 0);
+  setText('stat-discarded', stats.discarded || 0);
+  setText('stat-today', stats.today || 0);
 }
 
 function renderProgress(stats) {
-  const pct = stats.progressPct ?? 0;
+  const pct = stats.total > 0 ? Math.round(((stats.reviewed || 0) / stats.total) * 100) : (stats.progressPct ?? 0);
   const fill = getEl('progress-fill');
   const pctText = getEl('progress-pct');
   const track = getEl('progress-track');
@@ -46,16 +63,14 @@ function renderProgress(stats) {
 
   if (caption) {
     caption.textContent = stats.total > 0
-      ? `${stats.reviewed} de ${stats.total} contactos revisados manualmente. Los duplicados no cuentan como revisados por si solos.`
+      ? `${stats.reviewed || 0} de ${stats.total} contactos revisados manualmente. Los duplicados no cuentan como revisados por si solos.`
       : 'Sin datos aun.';
   }
 }
 
-function renderRecentActivity(leads) {
+function renderRecentActivity(recent) {
   const container = getEl('recent-activity');
   if (!container) return;
-
-  const recent = getRecentActivity(leads, 8);
 
   if (!recent.length) {
     container.innerHTML = '<p class="empty-state">No hay actividad registrada todavia.</p>';
@@ -98,14 +113,16 @@ function renderEmptyDashboard() {
   const container = getEl('recent-activity');
   if (container) container.innerHTML = '<p class="empty-state">No hay actividad registrada todavia.</p>';
 
-  updateSubtitle([]);
+  updateSubtitle(null);
 }
 
-function updateSubtitle(leads) {
+function updateSubtitle(stats) {
   const el = getEl('dashboard-subtitle');
   if (!el) return;
-  el.textContent = leads.length > 0
-    ? `${leads.length} contactos unicos importados · Ultima actualizacion: ${new Date().toLocaleDateString('es-CO')}`
+  const total = stats?.total || 0;
+  const updatedAt = stats?.updatedAt?.toDate ? stats.updatedAt.toDate() : stats?.updatedAt ? new Date(stats.updatedAt) : null;
+  el.textContent = total > 0
+    ? `${total} contactos unicos importados - ${stats?.isEstimatedFromCounts ? 'Resumen calculado por conteos' : `Ultima actualizacion: ${updatedAt ? updatedAt.toLocaleDateString('es-CO') : new Date().toLocaleDateString('es-CO')}`}`
     : 'Sin datos importados todavia.';
 }
 

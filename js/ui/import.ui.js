@@ -1,7 +1,7 @@
 // import.ui.js - Seccion de importacion de archivos Keybe.
 
 import { getState } from '../utils/state.js';
-import { parseContactsFile, parseMessagesFile, processImportData, uploadLeads } from '../services/import.service.js';
+import { parseContactsFile, parseMessagesFile, processImportData, processMessagesOnlyData, uploadLeads } from '../services/import.service.js';
 import { showSuccess, showError, showInfo } from './toast.ui.js';
 
 const getEl = (id) => document.getElementById(id);
@@ -12,6 +12,7 @@ let _processedLeads = null;
 let _processedStats = null;
 let _processedDiagnostics = null;
 let _processedUnlinkedConversations = null;
+let _importMode = 'full';
 
 export function initImportUI() {
   bindFileZone('upload-contacts', 'contacts-file-name', 'contacts-status', 'upload-contacts-zone', (file) => {
@@ -80,20 +81,24 @@ function handleFileSelected(file, nameId, statusId, zoneId, onFile) {
 async function checkReadyToImport() {
   const btn = getEl('btn-start-import');
 
-  if (_contactsFile && _messagesFile) {
+  if (_messagesFile) {
     try {
       showInfo('Analizando archivos...', 2000);
-      const contacts = await parseContactsFile(_contactsFile);
       const messages = await parseMessagesFile(_messagesFile);
-      const { leads, stats, diagnostics, unlinkedConversations } = processImportData(contacts, messages);
+      const result = _contactsFile
+        ? processImportData(await parseContactsFile(_contactsFile), messages)
+        : processMessagesOnlyData(messages);
+      const { leads, stats, diagnostics, unlinkedConversations } = result;
 
       _processedLeads = leads;
       _processedStats = stats;
       _processedDiagnostics = diagnostics;
       _processedUnlinkedConversations = unlinkedConversations;
+      _importMode = _contactsFile ? 'full' : 'messages_only';
       renderPreview(stats);
 
-      if (btn) btn.disabled = false;
+      if (btn) btn.disabled = !leads.length;
+      if (!leads.length) showError('No se encontraron conversaciones asociables a contactos existentes.');
     } catch (err) {
       showError(err.message);
       if (btn) btn.disabled = true;
@@ -112,21 +117,23 @@ function renderPreview(stats) {
   if (!previewEl || !previewStatsEl) return;
 
   const rows = [
+    { label: 'Modo', value: stats.importMode === 'messages_only' ? 'Solo mensajes' : 'Contactos + mensajes' },
     { label: 'Filas en contacts.xlsx', value: stats.totalContactRows },
     { label: 'Filas en messages.xlsx', value: stats.totalMessageRows },
-    { label: 'Contactos unicos a crear/actualizar', value: stats.uniqueImportableContacts },
+    { label: stats.importMode === 'messages_only' ? 'Conversaciones a sincronizar' : 'Contactos unicos a crear/actualizar', value: stats.uniqueImportableContacts },
     { label: 'Contactos con telefono valido', value: stats.contactsWithValidPhone },
     { label: 'Contactos sin telefono real', value: stats.contactsWithoutPhone },
     { label: 'Contactos con email', value: stats.contactsWithEmail },
     { label: 'Duplicados por telefono', value: stats.duplicateGroups },
-    { label: 'Contactos con mensajes', value: stats.contactsWithMessages },
-    { label: 'Contactos sin mensajes', value: stats.contactsWithoutMessages },
+    { label: stats.importMode === 'messages_only' ? 'Telefonos con mensajes' : 'Contactos con mensajes', value: stats.contactsWithMessages },
+    { label: stats.importMode === 'messages_only' ? 'Telefonos sin mensajes' : 'Contactos sin mensajes', value: stats.contactsWithoutMessages },
     { label: 'Mensajes con telefono valido', value: stats.messagesWithValidPhone },
     { label: 'Mensajes sin telefono real', value: stats.messagesWithoutRealPhone },
     { label: 'Mensajes asociables a contacto', value: stats.messagesAssociableToContact },
     { label: 'Mensajes no asociados', value: stats.messagesWithoutContact },
     { label: 'Conversaciones detectadas', value: stats.conversationsDetected },
     { label: 'Conversaciones sin contacto', value: stats.conversationsWithoutContact },
+    { label: 'Telefonos sin contacto existente', value: stats.missingExistingLeads || 0 },
     { label: 'Posibles errores de fecha', value: stats.possibleDateErrors },
     { label: 'Telefonos recuperados de notacion cientifica', value: stats.phonesRecoveredFromScientificNotation },
   ];
@@ -144,7 +151,11 @@ function renderPreview(stats) {
   const notes = [
     stats.contactRowsWithoutPhone > 0 ? `Se detectaron ${stats.contactRowsWithoutPhone} contactos sin telefono real. Quedan en diagnostico, no se inventa asociacion.` : '',
     stats.duplicateGroups > 0 ? `Se detectaron ${stats.duplicateGroups} grupos de duplicados por telefono. Se conserva todo en allOriginalFields.` : '',
-    `Se asociaron ${stats.associatedMessages} mensajes a contactos importados.`,
+    stats.importMode === 'messages_only'
+      ? `Se prepararon ${stats.associatedMessages} mensajes para sincronizar en conversaciones existentes.`
+      : `Se asociaron ${stats.associatedMessages} mensajes a contactos importados.`,
+    stats.importMode === 'messages_only' ? 'Modo solo mensajes: no se crean contactos nuevos ni se reimporta contacts.xlsx.' : '',
+    stats.missingExistingLeads > 0 ? `${stats.missingExistingLeads} telefonos del archivo de mensajes no existen como contacto en Firestore y quedan en diagnostico.` : '',
     stats.messagesWithoutContact > 0 ? `${stats.messagesWithoutContact} mensajes quedan como conversaciones sin contacto asociado.` : '',
     stats.phonesRecoveredFromScientificNotation > 0 ? `${stats.phonesRecoveredFromScientificNotation} telefonos fueron recuperados desde notacion cientifica.` : '',
   ].filter(Boolean);
@@ -195,25 +206,45 @@ async function handleStartImport() {
       stats: _processedStats,
       diagnostics: _processedDiagnostics,
       unlinkedConversations: _processedUnlinkedConversations,
+      updateDashboardStats: _importMode !== 'messages_only',
+      importMode: _importMode,
+      resume: true,
+      // El limite real es el tope diario (16.000). El tope por corrida se deja igual al
+      // diario para que UNA sola corrida pueda usar todo el cupo del dia (1 clic/dia).
+      // El limite de tiempo (18 min) protege contra una pestania colgada.
+      maxWriteOpsPerRun: 16000,
+      maxMillisPerRun: 18 * 60 * 1000,
+      dailyWriteCap: 16000,
     });
 
-    if (fillEl) fillEl.style.width = '100%';
-    if (pctEl) pctEl.textContent = '100%';
-    if (msgEl) msgEl.textContent = 'Importacion completada.';
+    const finalPct = summary.paused && summary.totalLeads
+      ? Math.round(((summary.processedLeads || 0) / summary.totalLeads) * 100)
+      : 100;
+    if (fillEl) fillEl.style.width = `${finalPct}%`;
+    if (pctEl) pctEl.textContent = `${finalPct}%`;
+    if (msgEl) {
+      msgEl.textContent = summary.paused
+        ? 'Importacion pausada para cuidar la cuota.'
+        : summary.alreadyCompleted
+          ? 'Este archivo ya estaba importado completamente.'
+          : 'Importacion completada.';
+    }
 
     if (resultEl) {
       resultEl.hidden = false;
-      resultEl.className = 'import-result';
-      resultEl.innerHTML = `
-        <strong>Importacion exitosa</strong><br/>
-        Contactos creados/actualizados: <strong>${_processedLeads.length}</strong>.<br/>
-        Mensajes guardados/actualizados: <strong>${summary.messagesSaved ?? 0}</strong>. Omitidos: <strong>${summary.messagesOmitted ?? 0}</strong>.<br/>
-        Conversaciones sin contacto guardadas/actualizadas: <strong>${summary.unlinkedConversationsSaved ?? 0}</strong>.<br/>
-        Ya puedes ir a la seccion <strong>Contactos</strong> para comenzar la revision.
-      `;
+      resultEl.className = summary.paused ? 'import-result warning' : 'import-result';
+      resultEl.innerHTML = renderImportSummary(summary);
     }
 
-    showSuccess(`${_processedLeads.length} contactos unicos importados correctamente.`);
+    if (summary.paused) {
+      showInfo(`Importacion pausada en ${summary.processedLeads} de ${summary.totalLeads}. Puedes continuar despues con los mismos archivos.`, 8000);
+    } else if (summary.alreadyCompleted) {
+      showInfo('Ese archivo ya estaba importado. No se repitio la subida.', 6000);
+    } else {
+      showSuccess(_importMode === 'messages_only'
+        ? `Conversaciones actualizadas para ${_processedLeads.length} contactos existentes.`
+        : `${_processedLeads.length} contactos unicos importados correctamente.`);
+    }
     document.dispatchEvent(new CustomEvent('leads-imported'));
   } catch (err) {
     console.error(err);
@@ -228,6 +259,48 @@ async function handleStartImport() {
   }
 }
 
+
+function renderImportSummary(summary) {
+  if (summary.alreadyCompleted) {
+    return `
+      <strong>Archivo ya importado</strong><br/>
+      No se repitio la subida ni se gasto cuota reescribiendo la misma informacion.<br/>
+      Contactos actualizados previamente: <strong>${summary.updatedLeads ?? summary.uploaded ?? 0}</strong>. Saltados: <strong>${summary.skippedLeads ?? 0}</strong>.
+    `;
+  }
+
+  if (summary.paused) {
+    const dailyCapReached = summary.pauseReason === 'daily_quota_cap';
+    const quotaLine = summary.dailyWriteCap
+      ? `Escrituras usadas hoy: <strong>${summary.writesUsedToday ?? 0}</strong> de <strong>${summary.dailyWriteCap}</strong>.<br/>`
+      : '';
+    return `
+      <strong>${dailyCapReached ? 'Cuota diaria alcanzada' : 'Importacion pausada para cuidar la cuota'}</strong><br/>
+      ${quotaLine}
+      Avance guardado: <strong>${summary.processedLeads ?? 0}</strong> de <strong>${summary.totalLeads ?? _processedLeads.length}</strong>.<br/>
+      Contactos actualizados: <strong>${summary.updatedLeads ?? summary.uploaded ?? 0}</strong>. Saltados sin cambios: <strong>${summary.skippedLeads ?? 0}</strong>.<br/>
+      Mensajes guardados/actualizados: <strong>${summary.messagesSaved ?? 0}</strong>. Omitidos: <strong>${summary.messagesOmitted ?? 0}</strong>. Fallidos: <strong>${summary.failedLeads ?? 0}</strong>.<br/>
+      Escrituras estimadas en esta tanda: <strong>${summary.estimatedWriteOpsThisRun ?? 0}</strong>.<br/>
+      Para continuar, vuelve a cargar exactamente los mismos archivos y presiona importar. La app seguira desde el ultimo contacto procesado.
+    `;
+  }
+
+  return _importMode === 'messages_only'
+    ? `
+      <strong>Importacion de mensajes exitosa</strong><br/>
+      Conversaciones revisadas: <strong>${_processedLeads.length}</strong>. Saltadas sin cambios: <strong>${summary.skippedLeads ?? 0}</strong>.<br/>
+      Mensajes guardados/actualizados: <strong>${summary.messagesSaved ?? 0}</strong>. Omitidos: <strong>${summary.messagesOmitted ?? 0}</strong>. Fallidos: <strong>${summary.failedLeads ?? 0}</strong>.<br/>
+      Conversaciones sin contacto guardadas/actualizadas: <strong>${summary.unlinkedConversationsSaved ?? 0}</strong>.
+    `
+    : `
+      <strong>Importacion exitosa</strong><br/>
+      Contactos actualizados: <strong>${summary.updatedLeads ?? summary.uploaded ?? 0}</strong>. Saltados sin cambios: <strong>${summary.skippedLeads ?? 0}</strong>.<br/>
+      Mensajes guardados/actualizados: <strong>${summary.messagesSaved ?? 0}</strong>. Omitidos: <strong>${summary.messagesOmitted ?? 0}</strong>. Fallidos: <strong>${summary.failedLeads ?? 0}</strong>.<br/>
+      Conversaciones sin contacto guardadas/actualizadas: <strong>${summary.unlinkedConversationsSaved ?? 0}</strong>.<br/>
+      Ya puedes ir a la seccion <strong>Contactos</strong> para comenzar la revision.
+    `;
+}
+
 function resetImportForm() {
   _contactsFile = null;
   _messagesFile = null;
@@ -235,6 +308,7 @@ function resetImportForm() {
   _processedStats = null;
   _processedDiagnostics = null;
   _processedUnlinkedConversations = null;
+  _importMode = 'full';
 
   const ids = [
     'upload-contacts', 'upload-messages',

@@ -4,7 +4,7 @@
 
 import { getState, setState }    from '../utils/state.js';
 import { updateLeadReview }      from '../services/firestore.service.js';
-import { getLeadMessages }       from '../services/messages.service.js';
+import { getLeadMessagesPage }   from '../services/messages.service.js';
 import { formatDate, formatStatus, formatChannel } from '../utils/formatters.js';
 import { displayPhone }          from '../utils/phone.utils.js';
 import { showSuccess, showError } from './toast.ui.js';
@@ -14,6 +14,9 @@ const getEl = (id) => document.getElementById(id);
 let _conversationMessages = [];
 let _conversationVisible = 80;
 let _conversationQuery = '';
+let _conversationCursor = null;
+let _conversationHasMore = false;
+let _conversationLeadId = null;
 
 // ── Inicialización ────────────────────────────────────────
 
@@ -29,8 +32,7 @@ export function initLeadDetailUI() {
     renderConversationList();
   });
   getEl('btn-load-more-messages')?.addEventListener('click', () => {
-    _conversationVisible += 80;
-    renderConversationList();
+    loadMoreMessages();
   });
 }
 
@@ -93,20 +95,27 @@ async function renderConversation(lead) {
   listEl.innerHTML = '<p class="empty-state">Cargando conversacion...</p>';
 
   try {
-    const messages = await getLeadMessages(lead.id || lead.phone);
+    _conversationMessages = [];
+    _conversationCursor = null;
+    _conversationHasMore = false;
+    _conversationLeadId = lead.id || lead.phone;
+    const page = await getLeadMessagesPage(_conversationLeadId, { pageSize: 80 });
     const currentLead = getState('currentLead');
     if (!currentLead || currentLead.id !== lead.id) return;
 
-    if (!messages.length) {
+    if (!page.messages.length) {
       listEl.innerHTML = `
         <p class="empty-state">
           No hay conversacion completa guardada para este contacto. Reimporta el archivo de mensajes para asociarla.
         </p>
       `;
+      updateConversationControls();
       return;
     }
 
-    _conversationMessages = [...messages].sort((a, b) => readDateMs(a.createdAt) - readDateMs(b.createdAt));
+    _conversationMessages = [...page.messages].sort((a, b) => readDateMs(a.createdAt) - readDateMs(b.createdAt));
+    _conversationCursor = page.cursor;
+    _conversationHasMore = page.hasMore;
     _conversationVisible = 80;
     _conversationQuery = '';
     const searchEl = getEl('detail-conversation-search');
@@ -115,6 +124,35 @@ async function renderConversation(lead) {
   } catch (err) {
     console.error(err);
     listEl.innerHTML = '<p class="empty-state">No se pudo cargar la conversacion completa.</p>';
+  }
+}
+
+async function loadMoreMessages() {
+  if (!_conversationLeadId || !_conversationHasMore) return;
+  const btn = getEl('btn-load-more-messages');
+  if (btn) {
+    btn.disabled = true;
+    btn.textContent = 'Cargando...';
+  }
+
+  try {
+    const page = await getLeadMessagesPage(_conversationLeadId, {
+      pageSize: 80,
+      cursor: _conversationCursor,
+    });
+    _conversationMessages = [..._conversationMessages, ...page.messages]
+      .sort((a, b) => readDateMs(a.createdAt) - readDateMs(b.createdAt));
+    _conversationCursor = page.cursor;
+    _conversationHasMore = page.hasMore;
+    renderConversationList();
+  } catch (err) {
+    console.error(err);
+    showError('No se pudieron cargar mas mensajes.');
+  } finally {
+    if (btn) {
+      btn.disabled = false;
+      btn.textContent = 'Cargar mas mensajes';
+    }
   }
 }
 
@@ -143,10 +181,17 @@ function renderConversationList() {
     `).join('');
   }
 
-  const moreBtn = getEl('btn-load-more-messages');
   const summary = getEl('detail-conversation-summary');
-  if (summary) summary.textContent = `${Math.min(visible.length, filtered.length)} de ${filtered.length} mensajes`;
-  if (moreBtn) moreBtn.hidden = _conversationVisible >= filtered.length;
+  if (summary) {
+    const searchNote = _conversationQuery ? ' (busqueda solo en mensajes cargados)' : '';
+    summary.textContent = `${Math.min(visible.length, filtered.length)} de ${filtered.length} mensajes cargados${_conversationHasMore ? '+' : ''}${searchNote}`;
+  }
+  updateConversationControls();
+}
+
+function updateConversationControls() {
+  const moreBtn = getEl('btn-load-more-messages');
+  if (moreBtn) moreBtn.hidden = !_conversationHasMore;
 }
 
 function buildDuplicateText(lead) {
@@ -227,12 +272,11 @@ async function saveLead() {
     const updatedLead = { ...lead, ...reviewData };
     setState({ currentLead: updatedLead });
 
-    // Actualizar en allLeads
-    const allLeads = getState('allLeads') || [];
-    const idx      = allLeads.findIndex((l) => l.id === lead.id);
+    const pageLeads = getState('currentPageLeads') || [];
+    const idx = pageLeads.findIndex((l) => l.id === lead.id);
     if (idx !== -1) {
-      allLeads[idx] = updatedLead;
-      setState({ allLeads: [...allLeads] });
+      pageLeads[idx] = updatedLead;
+      setState({ currentPageLeads: [...pageLeads], filteredLeads: [...pageLeads] });
     }
 
     showSuccess('Cambios guardados correctamente.');
