@@ -5,15 +5,31 @@
       "queryScope": "COLLECTION",
       "fields": [
         { "fieldPath": "revisionStatus", "order": "ASCENDING" },
-        { "fieldPath": "createdAt",      "order": "DESCENDING" }
+        { "fieldPath": "updatedAt", "order": "DESCENDING" }
       ]
     },
     {
       "collectionGroup": "keybeLeads",
       "queryScope": "COLLECTION",
       "fields": [
-        { "fieldPath": "assignedTo",     "order": "ASCENDING" },
-        { "fieldPath": "updatedAt",      "order": "DESCENDING" }
+        { "fieldPath": "assignedTo", "order": "ASCENDING" },
+        { "fieldPath": "updatedAt", "order": "DESCENDING" }
+      ]
+    },
+    {
+      "collectionGroup": "keybeLeads",
+      "queryScope": "COLLECTION",
+      "fields": [
+        { "fieldPath": "channel", "order": "ASCENDING" },
+        { "fieldPath": "updatedAt", "order": "DESCENDING" }
+      ]
+    },
+    {
+      "collectionGroup": "keybeLeads",
+      "queryScope": "COLLECTION",
+      "fields": [
+        { "fieldPath": "possibleInterest", "order": "ASCENDING" },
+        { "fieldPath": "updatedAt", "order": "DESCENDING" }
       ]
     },
     {
@@ -21,16 +37,32 @@
       "queryScope": "COLLECTION",
       "fields": [
         { "fieldPath": "revisionStatus", "order": "ASCENDING" },
-        { "fieldPath": "assignedTo",     "order": "ASCENDING" },
-        { "fieldPath": "createdAt",      "order": "DESCENDING" }
+        { "fieldPath": "assignedTo", "order": "ASCENDING" },
+        { "fieldPath": "updatedAt", "order": "DESCENDING" }
       ]
     },
     {
       "collectionGroup": "keybeLeads",
       "queryScope": "COLLECTION",
       "fields": [
-        { "fieldPath": "reviewedAt",     "order": "DESCENDING" },
-        { "fieldPath": "createdAt",      "order": "DESCENDING" }
+        { "fieldPath": "nameLower", "order": "ASCENDING" },
+        { "fieldPath": "updatedAt", "order": "DESCENDING" }
+      ]
+    },
+    {
+      "collectionGroup": "keybeLeads",
+      "queryScope": "COLLECTION",
+      "fields": [
+        { "fieldPath": "phone", "order": "ASCENDING" },
+        { "fieldPath": "updatedAt", "order": "DESCENDING" }
+      ]
+    },
+    {
+      "collectionGroup": "keybeLeads",
+      "queryScope": "COLLECTION",
+      "fields": [
+        { "fieldPath": "email", "order": "ASCENDING" },
+        { "fieldPath": "updatedAt", "order": "DESCENDING" }
       ]
     }
   ],
