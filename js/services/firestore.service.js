@@ -6,7 +6,8 @@ import {
   collection, doc,
   getDocs, getDoc, setDoc, updateDoc, deleteDoc,
   query, where, orderBy, limit, startAfter,
-  serverTimestamp, Timestamp,
+  increment, serverTimestamp, Timestamp,
+  getCountFromServer,
 } from 'https://www.gstatic.com/firebasejs/10.12.2/firebase-firestore.js';
 
 import { db }          from '../config/firebase.config.js';
@@ -16,6 +17,10 @@ import { COLLECTIONS } from '../utils/constants.js';
 
 function leadsRef() {
   return collection(db, COLLECTIONS.KEYBE_LEADS);
+}
+
+function statsRef() {
+  return doc(db, COLLECTIONS.KEYBE_STATS, 'summary');
 }
 
 function stripReviewFields(data) {
@@ -110,6 +115,61 @@ export async function getAllLeads() {
     .filter((lead) => !lead.migratedTo);
 }
 
+export async function loadLeadsPage(options = {}) {
+  const pageSize = Number(options.pageSize || 25);
+  const clauses = [];
+  const search = String(options.search || '').trim();
+
+  if (options.status) clauses.push(where('revisionStatus', '==', options.status));
+  if (options.assigned) clauses.push(where('assignedTo', '==', options.assigned));
+  if (options.channel) clauses.push(where('channel', '==', String(options.channel).toLowerCase()));
+  if (options.interest) clauses.push(where('possibleInterest', '==', options.interest));
+
+  let orderField = 'updatedAt';
+  let orderDirection = 'desc';
+
+  if (search) {
+    const term = search.toLowerCase();
+    const digits = search.replace(/\D/g, '');
+    if (looksLikeEmail(term)) {
+      clauses.push(where('email', '==', term));
+    } else if (digits.length >= 6) {
+      clauses.push(where('phone', '==', digits.slice(-10)));
+    } else {
+      orderField = 'nameLower';
+      orderDirection = 'asc';
+      clauses.push(where('nameLower', '>=', term));
+      clauses.push(where('nameLower', '<=', `${term}\uf8ff`));
+    }
+  }
+
+  clauses.push(orderBy(orderField, orderDirection));
+  if (orderField !== 'updatedAt') clauses.push(orderBy('updatedAt', 'desc'));
+  if (options.cursor) clauses.push(startAfter(options.cursor));
+  clauses.push(limit(pageSize + 1));
+
+  const snap = await getDocs(query(leadsRef(), ...clauses));
+  const docs = snap.docs.slice(0, pageSize);
+  return {
+    leads: docs.map((d) => normalizeLeadSnapshot(d)),
+    cursor: docs[docs.length - 1] || null,
+    hasMore: snap.docs.length > pageSize,
+  };
+}
+
+function normalizeLeadSnapshot(snap) {
+  const data = snap.data();
+  return {
+    id: snap.id,
+    ...data,
+    revisionStatus: data.revisionStatus || 'pendiente_revision',
+  };
+}
+
+function looksLikeEmail(value) {
+  return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(String(value || ''));
+}
+
 /**
  * Obtiene un lead por su ID de documento.
  *
@@ -131,23 +191,19 @@ export async function getLeadById(leadId) {
  */
 export async function upsertLead(docId, data) {
   const ref = doc(db, COLLECTIONS.KEYBE_LEADS, docId);
-  const snap = await getDoc(ref);
-  const legacyLead = snap.exists() ? null : await findLegacyLeadForImport(docId, data);
-  const payload = snap.exists()
-    ? stripReviewFields(data)
-    : legacyLead
-    ? { ...data, ...pickReviewFields(legacyLead.data), migratedFrom: legacyLead.id }
-    : data;
+  const cleanData = stripReviewFields(data);
+  const payload = {
+    ...cleanData,
+    nameLower: buildNameLower(cleanData),
+    searchableName: buildNameLower(cleanData),
+  };
   await setDoc(ref, payload, { merge: true });
+}
 
-  if (legacyLead) {
-    await setDoc(doc(db, COLLECTIONS.KEYBE_LEADS, legacyLead.id), {
-      migratedTo: docId,
-      migrationStatus: 'migrated_phone_fixed',
-      migrationReason: 'Telefono reparado en reimportacion Keybe',
-      updatedAt: serverTimestamp(),
-    }, { merge: true });
-  }
+function buildNameLower(data) {
+  return String(data.fullName || [data.name, data.surname].filter(Boolean).join(' ') || '')
+    .trim()
+    .toLowerCase();
 }
 
 /**
@@ -159,10 +215,13 @@ export async function upsertLead(docId, data) {
  */
 export async function updateLeadReview(leadId, reviewData) {
   const ref = doc(db, COLLECTIONS.KEYBE_LEADS, leadId);
+  const beforeSnap = await getDoc(ref);
+  const before = beforeSnap.exists() ? beforeSnap.data() : null;
   await updateDoc(ref, {
     ...reviewData,
     updatedAt: serverTimestamp(),
   });
+  await updateDashboardStatsForReview(before, reviewData);
 }
 
 /**
@@ -260,6 +319,145 @@ export function getRecentActivity(leads, n = 8) {
     })
     .slice(0, n);
 }
+
+export async function getDashboardStats() {
+  const snap = await getDoc(statsRef());
+  return snap.exists() ? snap.data() : null;
+}
+
+export async function saveDashboardStats(stats) {
+  await setDoc(statsRef(), {
+    ...stats,
+    updatedAt: serverTimestamp(),
+  }, { merge: true });
+}
+
+/**
+ * Recalcula las estadísticas del dashboard directamente desde Firestore
+ * usando getCountFromServer (solo 8 lecturas, sin descargar documentos).
+ * Úsalo cuando el doc de stats esté vacío, al pausar, o al hacer clic en "Actualizar".
+ */
+export async function recalcDashboardStatsFromFirestore() {
+  const ref = leadsRef();
+
+  const [
+    totalSnap,
+    pendingSnap,
+    inBaseSnap,
+    notInBaseSnap,
+    toContactSnap,
+    discardedSnap,
+    matriculadoSnap,
+    duplicateSnap,
+  ] = await Promise.all([
+    getCountFromServer(query(ref)),
+    getCountFromServer(query(ref, where('revisionStatus', '==', 'pendiente_revision'))),
+    getCountFromServer(query(ref, where('revisionStatus', '==', 'ya_esta_en_base'))),
+    getCountFromServer(query(ref, where('revisionStatus', '==', 'no_esta_en_base'))),
+    getCountFromServer(query(ref, where('revisionStatus', '==', 'debe_contactarse'))),
+    getCountFromServer(query(ref, where('revisionStatus', '==', 'descartado'))),
+    getCountFromServer(query(ref, where('revisionStatus', '==', 'matriculado'))),
+    getCountFromServer(query(ref, where('isDuplicate', '==', true))),
+  ]);
+
+  const total      = totalSnap.data().count;
+  const pending    = pendingSnap.data().count;
+  const inBase     = inBaseSnap.data().count;
+  const notInBase  = notInBaseSnap.data().count;
+  const toContact  = toContactSnap.data().count;
+  const discarded  = discardedSnap.data().count;
+  const matriculado = matriculadoSnap.data().count;
+  const duplicate  = duplicateSnap.data().count;
+  const reviewed   = inBase + notInBase + toContact + discarded + matriculado;
+
+  const stats = {
+    total,
+    pending,
+    inBase,
+    notInBase,
+    toContact,
+    discarded,
+    matriculado,
+    duplicate,
+    reviewed,
+    today: 0,
+    progressPct: total > 0 ? Math.round((reviewed / total) * 100) : 0,
+    isEstimatedFromCounts: true,
+  };
+
+  await saveDashboardStats(stats);
+  return stats;
+}
+
+async function updateDashboardStatsForReview(before, after) {
+  if (!before) return;
+  const deltas = {};
+  const beforeStatus = before.revisionStatus || 'pendiente_revision';
+  const afterStatus = after.revisionStatus || beforeStatus;
+
+  addStatusDelta(deltas, beforeStatus, -1);
+  addStatusDelta(deltas, afterStatus, 1);
+
+  const wasReviewed = isReviewedLead(before);
+  const isReviewed = isReviewedLead({ ...before, ...after });
+  if (!wasReviewed && isReviewed) deltas.reviewed = increment(1);
+  if (wasReviewed && !isReviewed) deltas.reviewed = increment(-1);
+
+  const oldDuplicate = before.isDuplicate === true || beforeStatus === 'duplicado';
+  const newDuplicate = before.isDuplicate === true || afterStatus === 'duplicado';
+  if (oldDuplicate !== newDuplicate) deltas.duplicate = increment(newDuplicate ? 1 : -1);
+
+  if (!wasReviewed && isReviewed && isToday(after.reviewedAt || new Date())) {
+    deltas.today = increment(1);
+  }
+
+  if (!Object.keys(deltas).length) return;
+  await setDoc(statsRef(), {
+    ...deltas,
+    updatedAt: serverTimestamp(),
+  }, { merge: true });
+}
+
+function addStatusDelta(deltas, status, amount) {
+  const field = {
+    pendiente_revision: 'pending',
+    ya_esta_en_base: 'inBase',
+    no_esta_en_base: 'notInBase',
+    debe_contactarse: 'toContact',
+    descartado: 'discarded',
+    matriculado: 'matriculado',
+  }[status];
+  if (field) deltas[field] = increment(amount);
+}
+
+function isReviewedLead(lead) {
+  return Boolean(lead.reviewedAt) || [
+    'ya_esta_en_base',
+    'no_esta_en_base',
+    'debe_contactarse',
+    'descartado',
+    'matriculado',
+  ].includes(lead.revisionStatus);
+}
+
+function isToday(value) {
+  const d = value?.toDate ? value.toDate() : value instanceof Date ? value : new Date(value);
+  if (isNaN(d.getTime())) return false;
+  const today = new Date();
+  return d.getFullYear() === today.getFullYear()
+    && d.getMonth() === today.getMonth()
+    && d.getDate() === today.getDate();
+}
+
+export async function getRecentActivityPage(n = 8) {
+  const snap = await getDocs(query(
+    leadsRef(),
+    orderBy('reviewedAt', 'desc'),
+    limit(n)
+  ));
+  return snap.docs.map((d) => normalizeLeadSnapshot(d)).filter((lead) => lead.reviewedAt);
+}
+
 
 // ── Batch import ──────────────────────────────────────────
 
