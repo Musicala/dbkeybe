@@ -13,6 +13,7 @@ const _state = {
   // Leads
   allLeads:       [],     // todos los leads cargados en memoria
   filteredLeads:  [],     // leads después de aplicar filtros
+  currentPageLeads: [],
   currentPage:    1,
   currentLead:    null,   // lead abierto en ficha
 

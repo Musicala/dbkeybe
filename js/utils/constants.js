@@ -9,6 +9,9 @@ export const COLLECTIONS = {
   LEAD_MESSAGES: 'messages',
   KEYBE_UNLINKED_CONVERSATIONS: 'keybeUnlinkedConversations',
   KEYBE_IMPORTS: 'keybeImports',
+  KEYBE_STATS: 'keybeStats',
+  KEYBE_LEAD_SYNC: 'keybeLeadSync',
+  KEYBE_IMPORT_RUNS: 'keybeImportRuns',
 };
 
 // Roles de usuario
