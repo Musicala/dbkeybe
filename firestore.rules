@@ -1,0 +1,125 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    function isAuthenticated() {
+      return request.auth != null;
+    }
+
+    function getProfile() {
+      return get(/databases/$(database)/documents/profiles/$(request.auth.uid)).data;
+    }
+
+    function isAdmin() {
+      let profile = getProfile();
+      return profile != null && profile.active == true && profile.role == 'admin';
+    }
+
+    function isAssistant() {
+      let profile = getProfile();
+      return profile != null && profile.active == true && profile.role == 'assistant';
+    }
+
+    function normalizedAuthEmail() {
+      return request.auth.token.email.lower();
+    }
+
+    function isBootstrapEmail() {
+      return normalizedAuthEmail() == 'alekcaballeromusic@gmail.com'
+        || normalizedAuthEmail() == 'catalina.medina.leal@gmail.com'
+        || normalizedAuthEmail() == 'adminmusicala@gmail.com'
+        || normalizedAuthEmail() == 'musicalaasesor@gmail.com';
+    }
+
+    function bootstrapRoleForEmail() {
+      return normalizedAuthEmail() == 'musicalaasesor@gmail.com'
+        ? 'assistant'
+        : 'admin';
+    }
+
+    function isOwnBootstrapProfileCreate(userId) {
+      return isAuthenticated()
+        && request.auth.uid == userId
+        && !exists(/databases/$(database)/documents/profiles/$(userId))
+        && isBootstrapEmail()
+        && request.resource.data.uid == request.auth.uid
+        && request.resource.data.email == normalizedAuthEmail()
+        && request.resource.data.active == true
+        && request.resource.data.role == bootstrapRoleForEmail()
+        && request.resource.data.keys().hasOnly([
+          'uid',
+          'email',
+          'name',
+          'role',
+          'active',
+          'createdAt',
+          'updatedAt'
+        ]);
+    }
+
+    function onlyUpdatesReviewFields() {
+      return request.resource.data.diff(resource.data).affectedKeys().hasOnly([
+        'revisionStatus',
+        'isInOfficialDatabase',
+        'assignedTo',
+        'internalNote',
+        'reviewedBy',
+        'reviewedByEmail',
+        'reviewedAt',
+        'updatedAt'
+      ]);
+    }
+
+    match /profiles/{userId} {
+      allow get: if isAuthenticated() && request.auth.uid == userId;
+      allow list: if isAuthenticated() && isAdmin();
+      allow read: if isAuthenticated() && isAdmin();
+
+      allow create: if isAuthenticated() && isAdmin();
+      allow create: if isOwnBootstrapProfileCreate(userId);
+
+      allow update, delete: if isAuthenticated() && isAdmin();
+    }
+
+    match /keybeLeads/{leadId} {
+      allow read, write: if isAuthenticated() && isAdmin();
+      allow read: if isAuthenticated() && isAssistant();
+      allow update: if isAuthenticated() && isAssistant() && onlyUpdatesReviewFields();
+      allow delete: if false;
+
+      match /messages/{messageId} {
+        allow read, write: if isAuthenticated() && isAdmin();
+        allow read: if isAuthenticated() && isAssistant();
+        allow update, delete: if false;
+      }
+    }
+
+    match /keybeUnlinkedConversations/{conversationId} {
+      allow read, write: if isAuthenticated() && isAdmin();
+      allow read: if isAuthenticated() && isAssistant();
+      allow update, delete: if false;
+    }
+
+    match /keybeImports/{importBatchId} {
+      allow read, write: if isAuthenticated() && isAdmin();
+      allow read: if isAuthenticated() && isAssistant();
+      allow update, delete: if false;
+    }
+
+    match /keybeStats/{docId} {
+      allow read, write: if isAuthenticated() && isAdmin();
+      allow read: if isAuthenticated() && isAssistant();
+      allow update, delete: if false;
+    }
+
+    match /keybeLeadSync/{leadId} {
+      allow read, write: if isAuthenticated() && isAdmin();
+      allow read, write: if false;
+    }
+
+    match /keybeImportRuns/{importBatchId} {
+      allow read, write: if isAuthenticated() && isAdmin();
+      allow read, write: if false;
+    }
+  }
+}

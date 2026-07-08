@@ -27,6 +27,10 @@ const BOOTSTRAP_USERS = {
     name: 'Catalina',
     role: ROLES.ADMIN,
   },
+  'adminmusicala@gmail.com': {
+    name: 'Admin Musicala',
+    role: ROLES.ADMIN,
+  },
   'musicalaasesor@gmail.com': {
     name: 'Asesor Musicala',
     role: ROLES.ASSISTANT,

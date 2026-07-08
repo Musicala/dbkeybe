@@ -88,6 +88,15 @@ Colección: `profiles` — el ID del documento es el UID del usuario en Firebase
 
 ```json
 {
+  "email": "adminmusicala@gmail.com",
+  "displayName": "Admin Musicala",
+  "role": "admin",
+  "active": true
+}
+```
+
+```json
+{
   "email": "musicalaasesor@gmail.com",
   "displayName": "Asesor Musicala",
   "role": "assistant",
