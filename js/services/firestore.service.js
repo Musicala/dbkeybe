@@ -226,7 +226,13 @@ export async function updateLeadReview(leadId, reviewData, { updateStats = false
   // global de estadísticas. El contacto ya quedó guardado correctamente:
   // nunca debemos convertir ese éxito en un error por una estadística auxiliar.
   if (updateStats) {
-    await updateDashboardStatsForReview(before, reviewData);
+    try {
+      await updateDashboardStatsForReview(before, reviewData);
+    } catch (statsError) {
+      // El resumen es derivado y se puede recalcular. No debe hacer que una
+      // revisión ya confirmada del contacto parezca perdida.
+      console.warn('[firestore.service] La revisión se guardó, pero no se pudo actualizar el resumen:', statsError);
+    }
   }
 }
 
