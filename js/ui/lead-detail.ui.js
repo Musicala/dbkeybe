@@ -266,7 +266,12 @@ async function saveLead() {
       updatedAt:           new Date(),
     };
 
-    await updateLeadReview(lead.id, reviewData);
+    await updateLeadReview(lead.id, reviewData, {
+      // Solo administradores pueden actualizar el resumen global. Para una
+      // asesora, guardar la revisión del contacto debe ser una operación
+      // independiente y confirmada, sin errores de permisos ajenos a ella.
+      updateStats: profile.role === 'admin',
+    });
 
     // Actualizar en el estado local también
     const updatedLead = { ...lead, ...reviewData };

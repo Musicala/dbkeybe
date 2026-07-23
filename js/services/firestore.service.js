@@ -213,7 +213,7 @@ function buildNameLower(data) {
  * @param {string} leadId
  * @param {Object} reviewData
  */
-export async function updateLeadReview(leadId, reviewData) {
+export async function updateLeadReview(leadId, reviewData, { updateStats = false } = {}) {
   const ref = doc(db, COLLECTIONS.KEYBE_LEADS, leadId);
   const beforeSnap = await getDoc(ref);
   const before = beforeSnap.exists() ? beforeSnap.data() : null;
@@ -221,7 +221,13 @@ export async function updateLeadReview(leadId, reviewData) {
     ...reviewData,
     updatedAt: serverTimestamp(),
   });
-  await updateDashboardStatsForReview(before, reviewData);
+
+  // Los asistentes pueden revisar contactos, pero no modificar el documento
+  // global de estadísticas. El contacto ya quedó guardado correctamente:
+  // nunca debemos convertir ese éxito en un error por una estadística auxiliar.
+  if (updateStats) {
+    await updateDashboardStatsForReview(before, reviewData);
+  }
 }
 
 /**
